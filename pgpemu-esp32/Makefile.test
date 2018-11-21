@@ -1,0 +1,3 @@
+cert-test: main/aes.c main/pgp-cert.c main/cert-test.c main/secrets.c 
+	   gcc -Wall -Imain main/aes.c main/pgp-cert.c main/cert-test.c main/secrets.c -o cert-test
+	   
