@@ -26,8 +26,8 @@
 #define PROFILE_NUM                 1
 #define PROFILE_APP_IDX             0
 #define ESP_APP_ID                  0x55
-//#define PGP_DEVICE_NAME          "Pokemon GO Plus"
-#define PGP_DEVICE_NAME          "Pokemon PBP"
+#define PGP_DEVICE_NAME          "Pokemon GO Plus"
+//#define PGP_DEVICE_NAME          "Pokemon PBP"
 /* #define SVC_INST_ID                 0 */
 /* #define BATTERY_INST_ID                 1 */
 /* #define LED_BUTTON_INST_ID                 2 */
@@ -76,14 +76,16 @@ typedef struct {
     int                     prepare_len;
 } prepare_type_env_t;
 
+static QueueHandle_t button_queue;
+
 static prepare_type_env_t prepare_write_env;
 
 static uint8_t raw_adv_data[] = {
         /* flags */
         0x02, 0x01, 0x06,
         /* device name */
-	//        0x10, 0x09, 'P', 'o', 'k', 'e', 'm', 'o', 'n', ' ', 'G', 'O', ' ','P', 'l', 'u','s',
-        0x0c, 0x09, 'P', 'o', 'k', 'e', 'm', 'o', 'n', ' ', 'P', 'B', 'P',
+	0x10, 0x09, 'P', 'o', 'k', 'e', 'm', 'o', 'n', ' ', 'G', 'O', ' ','P', 'l', 'u','s',
+        //0x0c, 0x09, 'P', 'o', 'k', 'e', 'm', 'o', 'n', ' ', 'P', 'B', 'P',
 	0x06, 0x20, 0x62, 0x04, 0xC5, 0x21, 0x00
 };
 static uint8_t raw_scan_rsp_data[] = {
@@ -468,83 +470,176 @@ void pgp_prepare_write_event_env(esp_gatt_if_t gatts_if, prepare_type_env_t *pre
 
 }
 
-void pgp_exec_write_event_env(esp_gatt_if_t gatts_if, prepare_type_env_t *prepare_write_env, esp_ble_gatts_cb_param_t *param){
-    if (param->exec_write.exec_write_flag == ESP_GATT_PREP_WRITE_EXEC && prepare_write_env->prepare_buf){
-        esp_log_buffer_hex(GATTS_TABLE_TAG, prepare_write_env->prepare_buf, prepare_write_env->prepare_len);
+//prepare_write_env->prepare_buf
+//param->write.len
+//param->write.conn_id
+void handle_protocol(esp_gatt_if_t gatts_if,
+                    const uint8_t *prepare_buf, int datalen,
+                    int conn_id)
+{
+    switch (cert_state) {
 
-	//todo: check if this is really the handle that we want
-
-	if (certificate_handle_table[IDX_CHAR_CENTRAL_TO_SFIDA_VAL] == prepare_write_env->handle) {
-		if (cert_state == 1) {
-			//we need to decrypt and send challenge data from APP
-			ESP_LOGI(GATTS_TABLE_TAG, "Received: %d", prepare_write_env->prepare_len);
-			uint8_t temp[20];
-			memset(temp, 0, sizeof(temp));
-			decrypt_next(prepare_write_env->prepare_buf, session_key, temp+4);
-			temp[0] = 0x02;
+	case 0:
+        {
+		if (datalen == 20) { //just assume server responds correctly
 			uint8_t notify_data[4];
 			memset(notify_data, 0, 4);
-			notify_data[0] = 0x02;
+			notify_data[0] = 0x01;
 
-			ESP_LOGI(GATTS_TABLE_TAG, "Sending response");
-			esp_log_buffer_hex(GATTS_TABLE_TAG, temp, sizeof(temp));
+			uint8_t nonce[16];
 
-			memcpy(cert_buffer, temp, 20);
-			esp_ble_gatts_set_attr_value(certificate_handle_table[IDX_CHAR_SFIDA_TO_CENTRAL_VAL], 20, cert_buffer);
-			cert_state = 2;
-			esp_ble_gatts_send_indicate(gatts_if, param->write.conn_id, certificate_handle_table[IDX_CHAR_SFIDA_COMMANDS_VAL],
-							    sizeof(notify_data), notify_data, false);
-		} else 	if (cert_state==2) {
-			//TODO: what do we use the data for?
-			ESP_LOGI(GATTS_TABLE_TAG, "Cert state==2 Received: %d", prepare_write_env->prepare_len);
-			uint8_t temp[20];
+			memset(nonce, 0x42, 16);
+
+			uint8_t temp[52];
+
+			struct next_challenge* chal = (struct next_challenge*)temp;
 			memset(temp, 0, sizeof(temp));
-			decrypt_next(prepare_write_env->prepare_buf, session_key, temp+4);
-			ESP_LOGI(GATTS_TABLE_TAG, "DEBUG:");
-			esp_log_buffer_hex(GATTS_TABLE_TAG, temp, sizeof(temp));
+			generate_next_chal(0, session_key, nonce, chal);
+			temp[0] = 0x01;
 
-			has_reconnect_key = 1;
-			//should be random, but this is easier for debugging
-			memset(reconnect_challenge, 0x46, 32);
+			memcpy(cert_buffer, temp, 52);
 
-			uint8_t notify_data[4] =  {0x04, 0x00, 0x23, 0x00 };
-			cert_state = 6;
-			esp_ble_gatts_send_indicate(gatts_if,
-						    param->write.conn_id,
-						    certificate_handle_table[IDX_CHAR_SFIDA_COMMANDS_VAL],
-						    sizeof(notify_data), notify_data, false);
-		} else if (cert_state==4) {
-			memset(cert_buffer, 0, 4);
-			generate_reconnect_response(session_key, prepare_write_env->prepare_buf+4, cert_buffer + 4);
-			cert_buffer[0] = 5;
+			//esp_log_buffer_hex(GATTS_TABLE_TAG, temp, sizeof(temp));
 
-			esp_log_buffer_hex(GATTS_TABLE_TAG, cert_buffer, 20);
-			
-			uint8_t notify_data[4];
-			memset(notify_data, 0, 4);
-			notify_data[0] = 0x05;
-			
-			esp_ble_gatts_set_attr_value(certificate_handle_table[IDX_CHAR_SFIDA_TO_CENTRAL_VAL], 20, cert_buffer);
-			esp_ble_gatts_send_indicate(gatts_if, param->write.conn_id, certificate_handle_table[IDX_CHAR_SFIDA_COMMANDS_VAL],
-							    sizeof(notify_data), notify_data, false);			
-			cert_state = 5;
+			esp_ble_gatts_set_attr_value(certificate_handle_table[IDX_CHAR_SFIDA_TO_CENTRAL_VAL], 52, cert_buffer);
+
+			//esp_log_buffer_hex(GATTS_TABLE_TAG, cert_buffer, 52);
+
+			cert_state = 1;
+			esp_ble_gatts_send_indicate(gatts_if, conn_id, certificate_handle_table[IDX_CHAR_SFIDA_COMMANDS_VAL], sizeof(notify_data), notify_data, false);
+		} else {
+		        ESP_LOGE(GATTS_TABLE_TAG, "App sends incorrect len=%d", datalen);
 		}
-	} else if (led_button_handle_table[IDX_CHAR_LED_VAL] == prepare_write_env->handle) {
+                    break;
+        }
+	case 1:
+        {
+		//we need to decrypt and send challenge data from APP
+		ESP_LOGI(GATTS_TABLE_TAG, "Received: %d", datalen);
+		uint8_t temp[20];
+		memset(temp, 0, sizeof(temp));
+		decrypt_next(prepare_buf, session_key, temp+4);
+		temp[0] = 0x02;
+		uint8_t notify_data[4];
+		memset(notify_data, 0, 4);
+		notify_data[0] = 0x02;
 
-		int number_of_patterns = prepare_write_env->prepare_buf[3] & 0x1f;
-		int priority = (prepare_write_env->prepare_buf[3] >> 5) & 0x7;
+		ESP_LOGI(GATTS_TABLE_TAG, "Sending response");
+		esp_log_buffer_hex(GATTS_TABLE_TAG, temp, sizeof(temp));
+
+		memcpy(cert_buffer, temp, 20);
+		esp_ble_gatts_set_attr_value(certificate_handle_table[IDX_CHAR_SFIDA_TO_CENTRAL_VAL], 20, cert_buffer);
+		cert_state = 2;
+		esp_ble_gatts_send_indicate(gatts_if, conn_id, certificate_handle_table[IDX_CHAR_SFIDA_COMMANDS_VAL], sizeof(notify_data), notify_data, false);
+            break;
+        }
+	case 2:
+        {
+		//TODO: what do we use the data for?
+		ESP_LOGI(GATTS_TABLE_TAG, "Cert state==2 Received: %d", datalen);
+		uint8_t temp[20];
+		memset(temp, 0, sizeof(temp));
+		decrypt_next(prepare_buf, session_key, temp+4);
+		ESP_LOGI(GATTS_TABLE_TAG, "DEBUG:");
+		esp_log_buffer_hex(GATTS_TABLE_TAG, temp, sizeof(temp));
+
+		has_reconnect_key = 1;
+		//should be random, but this is easier for debugging
+		memset(reconnect_challenge, 0x46, 32);
+
+		uint8_t notify_data[4] =  {0x04, 0x00, 0x23, 0x00 };
+		cert_state = 6;
+		esp_ble_gatts_send_indicate(gatts_if,
+					    conn_id,
+					    certificate_handle_table[IDX_CHAR_SFIDA_COMMANDS_VAL],
+					    sizeof(notify_data), notify_data, false);
+		break;
+        }
+        case 3:
+        {
+		if (datalen == 20) { //just assume server responds correctly
+			esp_log_buffer_hex(GATTS_TABLE_TAG, prepare_buf,
+					   datalen);
+			uint8_t notify_data[4] = {0x04, 0x00, 0x01, 0x00};
+			esp_ble_gatts_send_indicate(gatts_if,
+				    conn_id,
+				    certificate_handle_table[IDX_CHAR_SFIDA_COMMANDS_VAL],
+				    sizeof(notify_data), notify_data, false);
+			cert_state = 4;
+		}
+        }
+	case 4:
+        {
+		memset(cert_buffer, 0, 4);
+		generate_reconnect_response(session_key, prepare_buf+4, cert_buffer + 4);
+		cert_buffer[0] = 5;
+
+		esp_log_buffer_hex(GATTS_TABLE_TAG, cert_buffer, 20);
+			
+		uint8_t notify_data[4];
+		memset(notify_data, 0, 4);
+		notify_data[0] = 0x05;
+			
+		esp_ble_gatts_set_attr_value(certificate_handle_table[IDX_CHAR_SFIDA_TO_CENTRAL_VAL], 20, cert_buffer);
+		esp_ble_gatts_send_indicate(gatts_if, conn_id, certificate_handle_table[IDX_CHAR_SFIDA_COMMANDS_VAL], sizeof(notify_data), notify_data, false);
+		cert_state = 5;
+            break;
+        }
+	case 5:
+        {
+		if (datalen == 5) { //just assume server responsds correctly
+			uint8_t notify_data[4] = {0x04, 0x00, 0x02, 0x00};
+			esp_ble_gatts_send_indicate(gatts_if,
+				conn_id,
+				certificate_handle_table[IDX_CHAR_SFIDA_COMMANDS_VAL],
+				sizeof(notify_data), notify_data, false);									cert_state = 6;
+		}
+                break;
+        }
+        default:
+		ESP_LOGE(GATTS_TABLE_TAG, "Unhandled state: %d", cert_state);
+		break;
+    }
+}
+
+void handle_led_notify_from_app(const uint8_t *buffer)
+{
+		int number_of_patterns = buffer[3] & 0x1f;
+		int priority = (buffer[3] >> 5) & 0x7;
 
 		ESP_LOGI(GATTS_TABLE_TAG, "LED: Pattern Count=%d priority: %d", number_of_patterns, priority);
 		//1 pattern = 3 bytes
 		for (int i = 0; i < number_of_patterns; i++) {
 			int p = 4+3*i;
-			uint8_t *pat = &prepare_write_env->prepare_buf[p];
+			const uint8_t *pat = &buffer[p];
 			uint8_t duration = pat[0];
 			uint8_t red = pat[1] & 0xf;
 			uint8_t green = (pat[1]>>4) & 0xf;
 			uint8_t blue = pat[2] & 0xf;
 			ESP_LOGI(GATTS_TABLE_TAG, "*(%d) #%02x%02x%02x", duration, red, green, blue);
 		}
+		ESP_LOGI(GATTS_TABLE_TAG, "Sending push button");
+		xQueueSend(button_queue, &number_of_patterns, portMAX_DELAY);
+
+}
+
+void pgp_exec_write_event_env(esp_gatt_if_t gatts_if, prepare_type_env_t *prepare_write_env, esp_ble_gatts_cb_param_t *param){
+    if (param->exec_write.exec_write_flag == ESP_GATT_PREP_WRITE_EXEC && prepare_write_env->prepare_buf){
+        esp_log_buffer_hex(GATTS_TABLE_TAG, prepare_write_env->prepare_buf, prepare_write_env->prepare_len);
+
+	//it seems that this will be called only by Android version of the Pokemon Go App
+	ESP_LOGI(GATTS_TABLE_TAG, "WRITE EVT");
+
+	if (certificate_handle_table[IDX_CHAR_CENTRAL_TO_SFIDA_VAL] == prepare_write_env->handle) {
+
+    handle_protocol(gatts_if,
+                    prepare_write_env->prepare_buf,
+                    prepare_write_env->prepare_len,
+                    param->write.conn_id);
+
+
+	} else if (led_button_handle_table[IDX_CHAR_LED_VAL] == prepare_write_env->handle) {
+            handle_led_notify_from_app(prepare_write_env->prepare_buf);
 
 	}
 
@@ -595,14 +690,13 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
             if (create_attr_ret){
                 ESP_LOGE(GATTS_TABLE_TAG, "create attr table for cert  failed, error code = %x", create_attr_ret);
             }
-
-
         }
        	    break;
         case ESP_GATTS_READ_EVT:
 		ESP_LOGI(GATTS_TABLE_TAG, "ESP_GATTS_READ_EVT state=%d %s", cert_state,
 			 char_name_from_handle(param->read.handle));
 		if (cert_state == 1) {
+			ESP_LOGI(GATTS_TABLE_TAG, "DATA SENT TO APP");
 			esp_log_buffer_hex(GATTS_TABLE_TAG, cert_buffer, 52);
 		}
 		break;
@@ -611,6 +705,7 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
 		if (!param->write.is_prep){
 			// the data length of gattc write  must be less than MAX_VALUE_LENGTH.
 			ESP_LOGI(GATTS_TABLE_TAG, "GATT_WRITE_EVT (state=%d), handle = %d, value len = %d, value :", cert_state, param->write.handle, param->write.len);
+			ESP_LOGI(GATTS_TABLE_TAG, "DATA FROM APP");
 			esp_log_buffer_hex(GATTS_TABLE_TAG, param->write.value, param->write.len);
 
 			if (certificate_handle_table[IDX_CHAR_SFIDA_COMMANDS_CFG] == param->write.handle) {
@@ -645,64 +740,24 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
 				} else if (descr_value == 0x000) {
 					ESP_LOGI(GATTS_TABLE_TAG, "notify disable");
 				}
-			}
-
-			if (certificate_handle_table[IDX_CHAR_CENTRAL_TO_SFIDA_VAL] == param->write.handle) {
+			} else if (certificate_handle_table[IDX_CHAR_CENTRAL_TO_SFIDA_VAL] == param->write.handle) {
 				ESP_LOGI(GATTS_TABLE_TAG, "Write CENTRAL TO SFIDA: state=%d len=%d", cert_state, param->write.len);
-				if (cert_state == 0) {
-					if (param->write.len == 20) { //just assume server responds correctly
-						uint8_t notify_data[4];
-						memset(notify_data, 0, 4);
-						notify_data[0] = 0x01;
 
-						uint8_t nonce[16];
-
-						memset(nonce, 0x42, 16);
-
-						uint8_t temp[52];
-
-						struct next_challenge* chal = (struct next_challenge*)temp;
-						memset(temp, 0, sizeof(temp));
-						generate_next_chal(0, session_key, nonce, chal);
-						temp[0] = 0x01;
-
-						memcpy(cert_buffer, temp, 52);
-
-						//esp_log_buffer_hex(GATTS_TABLE_TAG, temp, sizeof(temp));
-
-						esp_ble_gatts_set_attr_value(certificate_handle_table[IDX_CHAR_SFIDA_TO_CENTRAL_VAL], 52, cert_buffer);
-
-						//esp_log_buffer_hex(GATTS_TABLE_TAG, cert_buffer, 52);
-
-						cert_state = 1;
-						esp_ble_gatts_send_indicate(gatts_if, param->write.conn_id, certificate_handle_table[IDX_CHAR_SFIDA_COMMANDS_VAL],
-									    sizeof(notify_data), notify_data, false);
-					}
-				} else if (cert_state == 3) {
-
-					if (param->write.len == 20) { //just assume server responds correctly
-						
-						esp_log_buffer_hex(GATTS_TABLE_TAG, param->write.value,
-								   param->write.len);
-						uint8_t notify_data[4] = {0x04, 0x00, 0x01, 0x00};
-						esp_ble_gatts_send_indicate(gatts_if,
-									    param->write.conn_id,
-									    certificate_handle_table[IDX_CHAR_SFIDA_COMMANDS_VAL],
-								    sizeof(notify_data), notify_data, false);
-						cert_state = 4;
-					}
-				} else if (cert_state == 5) {
-					if (param->write.len == 5) { //just assume server responsds correctly
-						uint8_t notify_data[4] = {0x04, 0x00, 0x02, 0x00};
-						esp_ble_gatts_send_indicate(gatts_if,
-									    param->write.conn_id,
-									    certificate_handle_table[IDX_CHAR_SFIDA_COMMANDS_VAL],
-								    sizeof(notify_data), notify_data, false);						
-						cert_state = 6;
-					}
+		                handle_protocol(gatts_if,
+		                    param->write.value,
+		                    param->write.len,
+		                    param->write.conn_id);
+			} else if (led_button_handle_table[IDX_CHAR_LED_VAL] == param->write.handle) {
+				handle_led_notify_from_app(param->write.value);
+				return;
+			} else {
+				ESP_LOGE(GATTS_TABLE_TAG, "unhandled data: handle: %d", param->write.handle);
+				for (int i =0; i < CERT_LAST_IDX; i++) {
+					ESP_LOGE(GATTS_TABLE_TAG, "handle: %d=%s",
+						certificate_handle_table[i],
+						char_name_from_handle(certificate_handle_table[i]));
 				}
 			}
-
 
 			/* send response when param->write.need_rsp is true*/
 			if (param->write.need_rsp){
@@ -836,6 +891,27 @@ static void gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_
 
 
 
+
+static void auto_button_task(void *pvParameters)
+{
+        ESP_LOGI("BUTTON", "[button task start]");
+	while (1) {
+		int element;
+		if (xQueueReceive(button_queue, &element, portMAX_DELAY)) {
+			    ESP_LOGI("BUTTON", "[auto push button]");
+			    uint8_t notify_data[2];
+                            notify_data[0] = 0x03;
+                            notify_data[1] = 0xff;
+
+			    esp_ble_gatts_send_indicate(last_if,
+							last_conn_id,
+							led_button_handle_table[IDX_CHAR_BUTTON_VAL],
+							sizeof(notify_data), notify_data, false);
+		}
+	}
+}
+
+
 #define BUF_SIZE (1024)
 #define RD_BUF_SIZE (BUF_SIZE)
 static QueueHandle_t uart0_queue;
@@ -957,9 +1033,12 @@ void app_main()
     //Install UART driver, and get the queue.
     uart_driver_install(EX_UART_NUM, BUF_SIZE * 2, BUF_SIZE * 2, 20, &uart0_queue, 0);
 
+    button_queue = xQueueCreate( 10, sizeof( int ) );
+
    //Create a task to handler UART event from ISR
     xTaskCreate(uart_event_task, "uart_event_task", 2048, NULL, 12, NULL);
 
+    xTaskCreate(auto_button_task, "auto_button_task", 2048, NULL, 12, NULL);
 
     ESP_ERROR_CHECK(esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT));
 
