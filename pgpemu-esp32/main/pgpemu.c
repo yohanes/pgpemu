@@ -567,6 +567,7 @@ void handle_protocol(esp_gatt_if_t gatts_if,
 				    sizeof(notify_data), notify_data, false);
 			cert_state = 4;
 		}
+		break;
         }
 	case 4:
         {
