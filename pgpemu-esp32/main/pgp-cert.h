@@ -5,7 +5,7 @@
 
 #ifdef ESP_PLATFORM
 #include "esp_system.h"
-#include "hwcrypto/aes.h"
+#include "esp32/aes.h"
 
 #define AES_Context esp_aes_context
 #define GEN_RANDOM esp_random

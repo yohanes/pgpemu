@@ -10,7 +10,7 @@
 
 #include "esp_log.h"
 
-void aes_encrypt(AES_Context *ctx, const uint8_t *inp, uint8_t *out)
+void pgp_aes_encrypt(AES_Context *ctx, const uint8_t *inp, uint8_t *out)
 {
 	esp_aes_crypt_ecb(ctx, ESP_AES_ENCRYPT, inp, out);
 }
@@ -28,7 +28,7 @@ void aes_setkey(AES_Context *ctx, const uint8_t *key)
 
 
 
-void aes_encrypt(AES_Context *ctx, const uint8_t *inp, uint8_t *out)
+void pgp_aes_encrypt(AES_Context *ctx, const uint8_t *inp, uint8_t *out)
 {
 	memcpy(out, inp, 16);
 	AES_ECB_encrypt(ctx, out);
@@ -94,7 +94,7 @@ void aes_hash(AES_Context *ctx,
 
 	init_nonce_hash(nonce, count, nonce_hash);
 	
-	aes_encrypt(ctx, nonce_hash, tmp); //encrypt nonce
+	pgp_aes_encrypt(ctx, nonce_hash, tmp); //encrypt nonce
 	int blocks = count/16;
 	const uint8_t *tmpdata = data;
 	for (int i =0; i < blocks; i++) {
@@ -103,7 +103,7 @@ void aes_hash(AES_Context *ctx,
 		}
 		tmpdata += 16;
 		memcpy(tmp2, tmp, 16);	//copy to temp
-		aes_encrypt(ctx, tmp2, tmp);
+		pgp_aes_encrypt(ctx, tmp2, tmp);
 
 	}
 	memcpy(output, tmp, 16);
@@ -129,7 +129,7 @@ void encrypt_block(AES_Context *ctx,
 
 	init_nonce_ctr(nonce, nonce_ctr);
 
-	aes_encrypt(ctx, nonce_ctr, tmp);
+	pgp_aes_encrypt(ctx, nonce_ctr, tmp);
 	
 	for (int i = 0; i < 16; i++) {
 		output[i] = tmp[i] ^ nonce_iv[i];
@@ -162,7 +162,7 @@ void aes_ctr(AES_Context *ctx, const uint8_t *nonce,
 
 	for (int i = 0; i < blocks; i++) {
 		inc_ctr(ctr);
-		aes_encrypt(ctx, ctr, ectr);
+		pgp_aes_encrypt(ctx, ctr, ectr);
 		
 		for (int j = 0; j < 16; j++) {
 			*outptr = ectr[j] ^ *tmpdata;
@@ -277,7 +277,7 @@ void generate_reconnect_response(const uint8_t *key,
 {
 	AES_Context ctx;
 	aes_setkey(&ctx, key);
-	aes_encrypt(&ctx, challenge, output);
+	pgp_aes_encrypt(&ctx, challenge, output);
 	for (int i = 0; i < 16; i++) {
 		output[i] ^= challenge[i+16];
 	}
